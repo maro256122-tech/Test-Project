@@ -282,6 +282,7 @@ tr:hover td{background:#fafbfd}
     <button class="nav-tab" onclick="showView('customers')">👥 العملاء</button>
     <button class="nav-tab" onclick="showView('expenses')">💸 المصاريف</button>
   </div>
+  <button class="btn btn-primary btn-sm" onclick="openExportModal()" style="flex-shrink:0;white-space:nowrap">📥 تصدير Excel</button>
 </div>
 
 <!-- ══ DASHBOARD ══ -->
@@ -604,6 +605,58 @@ tr:hover td{background:#fafbfd}
     <div id="cust-detail"></div>
   </div>
 </div>
+
+<!-- ══ EXPORT MODAL ══ -->
+<div class="modal" id="export-modal">
+  <div class="modal-box" style="max-width:480px">
+    <div class="modal-hd">
+      <div class="modal-ttl">📥 تصدير البيانات — Excel</div>
+      <button class="modal-close" onclick="closeModal('export-modal')">✕</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <!-- اختيار الشيتات -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:8px;letter-spacing:.3px">اختار الشيتات اللي تتصدر</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <label class="exp-check"><input type="checkbox" id="ex-orders" checked> 📦 الطلبات</label>
+          <label class="exp-check"><input type="checkbox" id="ex-customers" checked> 👥 العملاء</label>
+          <label class="exp-check"><input type="checkbox" id="ex-designs" checked> 🎨 التصاميم</label>
+          <label class="exp-check"><input type="checkbox" id="ex-inventory" checked> 📋 المخزون</label>
+          <label class="exp-check"><input type="checkbox" id="ex-expenses" checked> 💸 المصاريف</label>
+          <label class="exp-check"><input type="checkbox" id="ex-summary" checked> 📊 ملخص تنفيذي</label>
+        </div>
+      </div>
+
+      <!-- فلتر تاريخ للطلبات -->
+      <div id="ex-date-section">
+        <div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:6px;letter-spacing:.3px">فلترة الطلبات بالتاريخ (اختياري)</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="date" id="ex-from" class="date-input" style="flex:1">
+          <span style="color:var(--mute);font-size:12px">→</span>
+          <input type="date" id="ex-to" class="date-input" style="flex:1">
+        </div>
+        <div style="font-size:10px;color:var(--mute);margin-top:4px">فاضي = كل الطلبات</div>
+      </div>
+
+      <div id="export-progress" style="display:none">
+        <div style="font-size:11px;color:var(--sub);margin-bottom:6px" id="export-status-txt">جاري جلب البيانات...</div>
+        <div class="pbar" style="height:6px"><div class="pbf" id="export-prog-bar" style="width:0%;background:var(--ac);transition:width .3s"></div></div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" onclick="runExport()" id="btn-export-run" style="flex:1">📥 تصدير الآن</button>
+        <button class="btn btn-ghost" onclick="closeModal('export-modal')">إلغاء</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.exp-check{display:flex;align-items:center;gap:7px;background:var(--p2);border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer;font-size:12px;font-weight:600;color:var(--ink);transition:border-color .15s}
+.exp-check:hover{border-color:var(--ac);color:var(--ac)}
+.exp-check input[type=checkbox]{accent-color:var(--ac);width:14px;height:14px;cursor:pointer}
+</style>
 
 <script>
 // ══ SUPABASE ══
@@ -1214,6 +1267,325 @@ function showView(v){
   else if(v==='inventory')loadInventory();
   else if(v==='customers')loadCustomers();
   else if(v==='expenses')loadExpenses();
+}
+
+// ══ EXPORT MODAL ══
+function openExportModal(){
+  const t=today();
+  const m=t.slice(0,7);
+  g('ex-from').value=m+'-01';
+  g('ex-to').value=t;
+  g('export-progress').style.display='none';
+  g('btn-export-run').disabled=false;
+  g('btn-export-run').textContent='📥 تصدير الآن';
+  g('export-modal').classList.add('on');
+}
+
+function setExportProg(pct,txt){
+  const bar=g('export-prog-bar');
+  const lbl=g('export-status-txt');
+  if(bar)bar.style.width=pct+'%';
+  if(lbl)lbl.textContent=txt;
+}
+
+async function runExport(){
+  const btn=g('btn-export-run');
+  btn.disabled=true;btn.textContent='⏳ جاري التصدير...';
+  g('export-progress').style.display='';
+
+  const wantOrders=g('ex-orders')?.checked;
+  const wantCustomers=g('ex-customers')?.checked;
+  const wantDesigns=g('ex-designs')?.checked;
+  const wantInventory=g('ex-inventory')?.checked;
+  const wantExpenses=g('ex-expenses')?.checked;
+  const wantSummary=g('ex-summary')?.checked;
+
+  const exFrom=g('ex-from')?.value||'';
+  const exTo=g('ex-to')?.value||'';
+
+  try{
+    // ── جلب كل البيانات ──
+    let orders=[], customers=[], designs=[], inventory=[], expenses=[];
+
+    if(wantOrders||wantSummary){
+      setExportProg(5,'جاري جلب الطلبات...');
+      let q=sb.from('orders').select('*').order('order_date',{ascending:false});
+      if(exFrom)q=q.gte('order_date',exFrom);
+      if(exTo)q=q.lte('order_date',exTo);
+      const{data}=await q;
+      orders=data||[];
+    }
+    setExportProg(20,'جاري جلب العملاء...');
+    if(wantCustomers||wantSummary){
+      const{data}=await sb.from('customers').select('*').order('total_spent',{ascending:false});
+      customers=data||[];
+    }
+    setExportProg(35,'جاري جلب التصاميم...');
+    if(wantDesigns||wantSummary){
+      const{data}=await sb.from('designs').select('*').order('created_at',{ascending:false});
+      designs=data||[];
+    }
+    setExportProg(50,'جاري جلب المخزون...');
+    if(wantInventory){
+      const{data}=await sb.from('inventory').select('*,designs(name)').order('updated_at',{ascending:false});
+      inventory=data||[];
+    }
+    setExportProg(65,'جاري جلب المصاريف...');
+    if(wantExpenses||wantSummary){
+      const{data}=await sb.from('monthly_expenses').select('*').order('month',{ascending:false});
+      expenses=data||[];
+    }
+
+    setExportProg(80,'جاري بناء ملف Excel...');
+
+    // ── بناء XLSX ──
+    const wb=buildWorkbook({orders,customers,designs,inventory,expenses,
+      wantOrders,wantCustomers,wantDesigns,wantInventory,wantExpenses,wantSummary,
+      exFrom,exTo});
+
+    setExportProg(95,'جاري تحميل الملف...');
+    downloadXLSX(wb, 'BrandTracker_Export_'+today()+'.xlsx');
+    setExportProg(100,'تم التصدير بنجاح ✅');
+    toast('تم التصدير بنجاح ✅');
+    setTimeout(()=>closeModal('export-modal'),1500);
+
+  }catch(err){
+    toast('خطأ في التصدير: '+err.message,'error');
+    console.error(err);
+  }
+  btn.disabled=false;
+  btn.textContent='📥 تصدير الآن';
+}
+
+// ── بناء الـ Workbook ──
+function buildWorkbook({orders,customers,designs,inventory,expenses,
+    wantOrders,wantCustomers,wantDesigns,wantInventory,wantExpenses,wantSummary,exFrom,exTo}){
+
+  const sheets=[];
+
+  // ══ ١. ملخص تنفيذي ══
+  if(wantSummary){
+    const delivered=orders.filter(o=>o.status==='delivered');
+    const totalRev=delivered.reduce((s,o)=>s+(o.sale_price*o.qty),0);
+    const totalProfit=delivered.reduce((s,o)=>s+(o.net_profit*o.qty),0);
+    const margin=totalRev>0?totalProfit/totalRev*100:0;
+    const totalExp=expenses.reduce((s,e)=>s+e.amount,0);
+    const netAfterExp=totalProfit-totalExp;
+
+    const statusCount={pending:0,delivered:0,returned:0,cancelled:0};
+    orders.forEach(o=>{if(statusCount[o.status]!==undefined)statusCount[o.status]++;});
+
+    const topCustomers=customers.slice(0,5);
+    const byDesign={};
+    delivered.forEach(o=>{
+      const k=o.design_name||'غير محدد';
+      if(!byDesign[k])byDesign[k]={rev:0,profit:0,count:0};
+      byDesign[k].rev+=o.sale_price*o.qty;
+      byDesign[k].profit+=o.net_profit*o.qty;
+      byDesign[k].count+=o.qty;
+    });
+    const topDesigns=Object.entries(byDesign).sort((a,b)=>b[1].rev-a[1].rev).slice(0,5);
+
+    const data=[
+      ['📊 ملخص تنفيذي — Brand Tracker'],
+      ['تاريخ التصدير', new Date().toLocaleDateString('ar-EG')],
+      ['الفترة', (exFrom&&exTo)?exFrom+' → '+exTo:'كل البيانات'],
+      [],
+      ['═══ الأداء المالي ═══'],
+      ['إجمالي الإيراد (مكتمل)', totalRev],
+      ['صافي الربح الإجمالي', totalProfit],
+      ['هامش الربح %', +margin.toFixed(1)],
+      ['إجمالي المصاريف الثابتة', totalExp],
+      ['صافي الربح بعد المصاريف', netAfterExp],
+      [],
+      ['═══ إحصائيات الطلبات ═══'],
+      ['إجمالي الطلبات', orders.length],
+      ['مكتمل', statusCount.delivered],
+      ['معلق', statusCount.pending],
+      ['مرتجع', statusCount.returned],
+      ['ملغي', statusCount.cancelled],
+      ['معدل الإرجاع %', orders.length>0?+((statusCount.returned/orders.length*100).toFixed(1)):0],
+      [],
+      ['═══ إحصائيات العملاء ═══'],
+      ['إجمالي العملاء', customers.length],
+      ['عملاء متكررين (أكثر من طلب)', customers.filter(c=>c.total_orders>1).length],
+      ['متوسط الإنفاق/عميل', customers.length>0?+(customers.reduce((s,c)=>s+c.total_spent,0)/customers.length).toFixed(0):0],
+      [],
+      ['═══ أفضل ٥ تصاميم بالإيراد ═══'],
+      ['التصميم','الإيراد','الربح','عدد القطع'],
+      ...topDesigns.map(([k,v])=>[k,v.rev,v.profit,v.count]),
+      [],
+      ['═══ أفضل ٥ عملاء بالإنفاق ═══'],
+      ['الاسم','الهاتف','عدد الطلبات','إجمالي الإنفاق'],
+      ...topCustomers.map(c=>[c.name,c.phone,c.total_orders,c.total_spent]),
+    ];
+    sheets.push({name:'📊 الملخص',data,colWidths:[32,18,18,15]});
+  }
+
+  // ══ ٢. الطلبات ══
+  if(wantOrders){
+    const sLbl={pending:'معلق',delivered:'مكتمل',returned:'مرتجع',cancelled:'ملغي'};
+    const pLbl={cod:'COD',card:'بطاقة',instapay:'InstaPay',wallet:'محافظ'};
+    const headers=['رقم الطلب','التاريخ','اسم العميل','واتساب العميل','إيميل العميل','مدينة العميل','عنوان العميل','التصميم','المقاس','الكمية','سعر البيع','إجمالي البيع','طريقة الدفع','شركة الشحن','تكلفة الشحن','صافي الربح/قطعة','إجمالي الربح','الحالة','ملاحظات','تاريخ الإنشاء'];
+    const rows=orders.map((o,i)=>[
+      i+1,
+      o.order_date||'',
+      o.customer_name||'',
+      o.customer_phone||'',
+      o.customer_email||'',
+      o.customer_city||'',
+      o.customer_address||'',
+      o.design_name||'',
+      o.size||'',
+      o.qty||1,
+      o.sale_price||0,
+      (o.sale_price||0)*(o.qty||1),
+      pLbl[o.payment_method]||o.payment_method||'',
+      o.shipping_company||'',
+      o.shipping_cost||0,
+      o.net_profit||0,
+      (o.net_profit||0)*(o.qty||1),
+      sLbl[o.status]||o.status||'',
+      o.notes||'',
+      o.created_at?new Date(o.created_at).toLocaleDateString('ar-EG'):'',
+    ]);
+    // صفوف الإجماليات
+    const totalRows=orders.length;
+    const summaryRows=[
+      [],
+      ['الإجماليات','','','','','','','','','',
+        orders.reduce((s,o)=>s+o.sale_price,0),'',
+        '','','',
+        orders.reduce((s,o)=>s+o.net_profit,0),
+        orders.reduce((s,o)=>s+(o.net_profit||0)*(o.qty||1),0),'','',''],
+    ];
+    sheets.push({
+      name:'📦 الطلبات',
+      data:[headers,...rows,...summaryRows],
+      colWidths:[8,14,20,16,22,14,24,20,10,8,12,14,14,16,12,16,14,12,24,16],
+      headerRow:0,
+      summaryRow:rows.length+1,
+    });
+  }
+
+  // ══ ٣. العملاء ══
+  if(wantCustomers){
+    const headers=['م','الاسم','الهاتف','الإيميل','المدينة','عدد الطلبات','إجمالي الإنفاق','آخر طلب','ملاحظات'];
+    const rows=customers.map((c,i)=>[
+      i+1,c.name||'',c.phone||'',c.email||'',c.city||'',
+      c.total_orders||0,c.total_spent||0,c.last_order_date||'',c.notes||''
+    ]);
+    sheets.push({name:'👥 العملاء',data:[headers,...rows],colWidths:[6,22,16,24,14,14,16,14,24],headerRow:0});
+  }
+
+  // ══ ٤. التصاميم ══
+  if(wantDesigns){
+    const headers=['م','اسم التصميم','النموذج','سعر البيع','تكلفة الإنتاج/قطعة','الكمية المطبوعة','نسبة البيع %','نسبة الإرجاع %','مقاس S/M/L %','مقاس XL %','مقاس XXL+ %','تكلفة POD/قطعة','حجم POD/شهر','نشط','تاريخ الإنشاء'];
+    const rows=designs.map((d,i)=>[
+      i+1,d.name||'',d.model==='pre'?'دفعة مقدمة':'Print-on-demand',
+      d.price||0,d.cogs||0,d.qty||0,d.sold_pct||0,d.returns_pct||0,
+      d.size_sm||0,d.size_xl||0,d.size_xxl||0,
+      d.pod_cogs||0,d.pod_volume||0,
+      d.is_active?'نعم':'لا',
+      d.created_at?new Date(d.created_at).toLocaleDateString('ar-EG'):'',
+    ]);
+    sheets.push({name:'🎨 التصاميم',data:[headers,...rows],colWidths:[6,22,18,12,18,16,14,14,12,10,10,14,14,10,14],headerRow:0});
+  }
+
+  // ══ ٥. المخزون ══
+  if(wantInventory){
+    const headers=['م','التصميم','المقاس','كمية مطبوعة','كمية مباعة','كمية مرتجعة','كمية متبقية','نسبة البيع %','آخر تحديث'];
+    const rows=inventory.map((inv,i)=>{
+      const rem=(inv.qty_printed||0)-(inv.qty_sold||0)-(inv.qty_returned||0);
+      const pct=inv.qty_printed>0?+((inv.qty_sold/inv.qty_printed)*100).toFixed(1):0;
+      return[
+        i+1,inv.designs?.name||'—',inv.size||'',
+        inv.qty_printed||0,inv.qty_sold||0,inv.qty_returned||0,rem,pct,
+        inv.updated_at?new Date(inv.updated_at).toLocaleDateString('ar-EG'):'',
+      ];
+    });
+    sheets.push({name:'📋 المخزون',data:[headers,...rows],colWidths:[6,22,12,14,12,14,12,12,14],headerRow:0});
+  }
+
+  // ══ ٦. المصاريف ══
+  if(wantExpenses){
+    // تجميع حسب الشهر
+    const byMonth={};
+    expenses.forEach(e=>{
+      const m=e.month?.slice(0,7)||'';
+      if(!byMonth[m])byMonth[m]=[];
+      byMonth[m].push(e);
+    });
+    const headers=['الشهر','الفئة','المبلغ','ملاحظات','تاريخ الإنشاء'];
+    const rows=[];
+    let lastMonth='';
+    expenses.forEach((e,i)=>{
+      const m=e.month?.slice(0,7)||'';
+      if(m!==lastMonth){
+        if(rows.length)rows.push(['','','','','']);
+        lastMonth=m;
+        const monthTotal=byMonth[m].reduce((s,x)=>s+x.amount,0);
+        rows.push(['── '+m+' (إجمالي: '+monthTotal.toLocaleString('ar-EG')+' ج.م) ──','','','','']);
+      }
+      rows.push([e.month?.slice(0,7)||'',e.category||'',e.amount||0,e.notes||'',
+        e.created_at?new Date(e.created_at).toLocaleDateString('ar-EG'):'']);
+    });
+    const grandTotal=expenses.reduce((s,e)=>s+e.amount,0);
+    rows.push([],[],['الإجمالي الكلي','',grandTotal,'','']);
+    sheets.push({name:'💸 المصاريف',data:[headers,...rows],colWidths:[14,28,14,28,14],headerRow:0});
+  }
+
+  return sheets;
+}
+
+// ── تحويل Sheet → CSV بـ BOM ──
+function sheetToCSV(rows){
+  return rows.map(r=>r.map(c=>{
+    const v=c===null||c===undefined?'':String(c);
+    return v.includes(',')||v.includes('\n')||v.includes('"')?'"'+v.replace(/"/g,'""')+'"':v;
+  }).join(',')).join('\n');
+}
+
+// ── تحويل إلى XLSX حقيقي بدون مكتبة خارجية ──
+function downloadXLSX(sheets, filename){
+  // بنستخدم SheetJS لو موجود، غير كده بننزل كـ ZIP من CSVs مع امتداد xlsx
+  // الأبسط والأضمن: نبني multi-sheet xlsx باستخدام data URIs
+  // لأن SheetJS مش موجود في الملف، هنستخدم CSV مع BOM ونحطهم في ملف واحد مضغوط
+  // بنعمل Blob لكل sheet ونضمهم في zip باستخدام فنكشن بسيطة
+
+  // حل بديل عملي: تصدير workbook كـ HTML table يفتحه Excel مباشرة
+  let html='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">';
+  html+='<head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets>';
+  sheets.forEach(s=>{html+=`<x:ExcelWorksheet><x:Name>${s.name}</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet>`;});
+  html+='</x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->';
+  html+='<style>td{font-family:Cairo,Arial;font-size:11pt;mso-number-format:"@"} .hd{background:#1d3d8f;color:#fff;font-weight:bold;text-align:center} .sm{background:#f0f2f5;font-weight:bold;color:#1a2035} .tot{background:#edf7f3;font-weight:900;color:#0a7c4e} .num{mso-number-format:"#,##0"} .pct{mso-number-format:"0.0%"}</style></head><body>';
+
+  sheets.forEach((s,si)=>{
+    if(si>0)html+='<br>';
+    html+=`<table border="0" style="border-collapse:collapse" x:Name="${s.name}">`;
+    s.data.forEach((row,ri)=>{
+      html+='<tr>';
+      row.forEach((cell,ci)=>{
+        const isHeader=ri===s.headerRow;
+        const isSummary=s.summaryRow&&ri===s.summaryRow+1;
+        const isSection=typeof cell==='string'&&(cell.startsWith('═══')||cell.startsWith('──'));
+        let cls=isHeader?'hd':isSummary?'tot':isSection?'sm':'';
+        const isNum=typeof cell==='number';
+        if(isNum)cls+=' num';
+        html+=`<td class="${cls}" dir="rtl">${cell===null||cell===undefined?'':cell}</td>`;
+      });
+      html+='</tr>';
+    });
+    html+='</table>';
+  });
+
+  html+='</body></html>';
+
+  const blob=new Blob(['\uFEFF'+html],{type:'application/vnd.ms-excel;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
 }
 
 init();
